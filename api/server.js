@@ -7,6 +7,7 @@ const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 require('dotenv').config();
+const serverless = require("serverless-http");
 
 const app = express();
 
@@ -774,7 +775,5 @@ app.use((error, req, res, next) => {
   res.status(500).json({ message: error.message });
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+module.exports = app;
+module.exports.handler = serverless(app);

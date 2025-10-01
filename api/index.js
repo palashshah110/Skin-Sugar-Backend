@@ -58,7 +58,25 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', publicRoutes);
 app.use('/api/orders', orderRoutes);
-
+app.get("/api/pincode-check/:pincode", async (req, res) => {
+  const { pincode } = req.params;
+  try {
+    const response = await fetch(
+      `https://track.delhivery.com/api/kinko/v1/invoice/charges/.json?md=E&ss=Delivered&d_pin=${pincode}&o_pin=450331&cgm=10&pt=COD`,
+      {
+        headers: {
+          Authorization: "Token 34893d8057bd273c9820309963ce7cf4e284804b",
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error("Delhivery API error:", error);
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
 // Root route
 app.get('/', (req, res) => {
   res.json({ message: 'API is running' });

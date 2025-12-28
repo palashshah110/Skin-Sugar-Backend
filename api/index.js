@@ -149,7 +149,41 @@ const Order = mongoose.model('Order', new mongoose.Schema({
   }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
-}));;
+}));
+
+const Basket = mongoose.model('Basket', new mongoose.Schema({
+  name: { type: String, required: true },
+  description: String,
+  price: { type: Number, required: true },
+  maxItems: { type: Number, default: 10 },
+  size: { type: String, enum: ['small', 'medium', 'large'], default: 'medium' },
+  dimensions: {
+    length: Number,
+    width: Number,
+    height: Number
+  },
+  category: String,
+  features: [String],
+  rating: { type: Number, default: 0 },
+  reviews: { type: Number, default: 0 },
+  inStock: { type: Boolean, default: true },
+  image: String,
+  createdAt: { type: Date, default: Date.now }
+}));
+
+const Coupon = mongoose.model('Coupon', new mongoose.Schema({
+  code: { type: String, required: true, unique: true, uppercase: true },
+  description: String,
+  discountType: { type: String, enum: ['percentage', 'fixed'], required: true },
+  discountValue: { type: Number, required: true },
+  minPurchase: { type: Number, default: 0 },
+  maxDiscount: { type: Number },
+  expiryDate: { type: Date },
+  usageLimit: { type: Number },
+  usedCount: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+}));
 
 // Authentication Middleware
 const authenticateToken = (req, res, next) => {
@@ -667,6 +701,295 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, 
   }
 });
 
+// Basket Management Routes
+app.get('/api/admin/baskets', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const query = {};
+
+    // Filter by size
+    if (req.query.size) {
+      query.size = req.query.size;
+    }
+
+    // Filter by inStock
+    if (req.query.inStock !== undefined) {
+      query.inStock = req.query.inStock === 'true';
+    }
+
+    // Search by name, category, or size
+    if (req.query.search) {
+      query.$or = [
+        { name: { $regex: req.query.search, $options: 'i' } },
+        { category: { $regex: req.query.search, $options: 'i' } },
+        { size: { $regex: req.query.search, $options: 'i' } }
+      ];
+    }
+
+    const totalCount = await Basket.countDocuments(query);
+    const baskets = await Basket.find(query)
+      .sort({ createdAt: -1, _id: 1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.json({
+      baskets,
+      currentPage: page,
+      totalPages,
+      totalCount,
+      hasNext: page < totalPages,
+      hasPrev: page > 1
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching baskets', error: error.message });
+  }
+});
+
+app.post('/api/admin/baskets', authenticateToken, requireAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const basketData = {
+      name: req.body.name,
+      description: req.body.description,
+      price: parseFloat(req.body.price),
+      maxItems: parseInt(req.body.maxItems) || 10,
+      size: req.body.size || 'medium',
+      category: req.body.category,
+      rating: parseFloat(req.body.rating) || 0,
+      reviews: parseInt(req.body.reviews) || 0,
+      inStock: req.body.inStock === 'true' || req.body.inStock === true
+    };
+
+    // Parse dimensions if provided
+    if (req.body.dimensions) {
+      try {
+        basketData.dimensions = typeof req.body.dimensions === 'string'
+          ? JSON.parse(req.body.dimensions)
+          : req.body.dimensions;
+      } catch (e) {
+        // If parsing fails, try individual dimension fields
+        basketData.dimensions = {
+          length: parseFloat(req.body.length) || 0,
+          width: parseFloat(req.body.width) || 0,
+          height: parseFloat(req.body.height) || 0
+        };
+      }
+    }
+
+    // Parse features array
+    if (req.body.features) {
+      basketData.features = typeof req.body.features === 'string'
+        ? JSON.parse(req.body.features)
+        : req.body.features;
+    }
+
+    if (req.file) {
+      basketData.image = req.file.path;
+    }
+
+    const basket = new Basket(basketData);
+    await basket.save();
+
+    res.status(201).json({ message: 'Basket created successfully', basket });
+  } catch (error) {
+    res.status(500).json({ message: 'Error creating basket', error: error.message });
+  }
+});
+
+app.put('/api/admin/baskets/:id', authenticateToken, requireAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+
+    // Parse numeric fields
+    if (updateData.price) updateData.price = parseFloat(updateData.price);
+    if (updateData.maxItems) updateData.maxItems = parseInt(updateData.maxItems);
+    if (updateData.rating) updateData.rating = parseFloat(updateData.rating);
+    if (updateData.reviews) updateData.reviews = parseInt(updateData.reviews);
+
+    // Handle boolean
+    if (updateData.inStock !== undefined) {
+      updateData.inStock = updateData.inStock === 'true' || updateData.inStock === true;
+    }
+
+    // Parse dimensions
+    if (updateData.dimensions && typeof updateData.dimensions === 'string') {
+      updateData.dimensions = JSON.parse(updateData.dimensions);
+    }
+
+    // Parse features
+    if (updateData.features && typeof updateData.features === 'string') {
+      updateData.features = JSON.parse(updateData.features);
+    }
+
+    if (req.file) {
+      updateData.image = req.file.path;
+    }
+
+    const basket = await Basket.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+
+    if (!basket) {
+      return res.status(404).json({ message: 'Basket not found' });
+    }
+
+    res.json({ message: 'Basket updated successfully', basket });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating basket', error: error.message });
+  }
+});
+
+app.delete('/api/admin/baskets/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const basket = await Basket.findByIdAndDelete(req.params.id);
+    if (!basket) {
+      return res.status(404).json({ message: 'Basket not found' });
+    }
+    res.json({ message: 'Basket deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting basket', error: error.message });
+  }
+});
+
+// Coupon Management Routes
+app.get('/api/admin/coupons', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    const query = {};
+
+    // Filter by active status
+    if (req.query.isActive !== undefined) {
+      query.isActive = req.query.isActive === 'true';
+    }
+
+    // Filter by discount type
+    if (req.query.discountType) {
+      query.discountType = req.query.discountType;
+    }
+
+    // Search by code or description
+    if (req.query.search) {
+      query.$or = [
+        { code: { $regex: req.query.search, $options: 'i' } },
+        { description: { $regex: req.query.search, $options: 'i' } }
+      ];
+    }
+
+    const totalCount = await Coupon.countDocuments(query);
+    const coupons = await Coupon.find(query)
+      .sort({ createdAt: -1, _id: 1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalPages = Math.ceil(totalCount / limit);
+
+    res.json({
+      coupons,
+      currentPage: page,
+      totalPages,
+      totalCount,
+      hasNext: page < totalPages,
+      hasPrev: page > 1
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching coupons', error: error.message });
+  }
+});
+
+app.post('/api/admin/coupons', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { code, description, discountType, discountValue, minPurchase, maxDiscount, expiryDate, usageLimit, isActive } = req.body;
+
+    // Check if coupon code already exists
+    const existingCoupon = await Coupon.findOne({ code: code.toUpperCase() });
+    if (existingCoupon) {
+      return res.status(400).json({ message: 'Coupon code already exists' });
+    }
+
+    const couponData = {
+      code: code.toUpperCase(),
+      description,
+      discountType,
+      discountValue: parseFloat(discountValue),
+      minPurchase: parseFloat(minPurchase) || 0,
+      maxDiscount: maxDiscount ? parseFloat(maxDiscount) : undefined,
+      expiryDate: expiryDate ? new Date(expiryDate) : undefined,
+      usageLimit: usageLimit ? parseInt(usageLimit) : undefined,
+      isActive: isActive !== undefined ? isActive : true
+    };
+
+    const coupon = new Coupon(couponData);
+    await coupon.save();
+
+    res.status(201).json({ message: 'Coupon created successfully', coupon });
+  } catch (error) {
+    res.status(500).json({ message: 'Error creating coupon', error: error.message });
+  }
+});
+
+app.put('/api/admin/coupons/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+
+    // Parse numeric fields
+    if (updateData.discountValue) updateData.discountValue = parseFloat(updateData.discountValue);
+    if (updateData.minPurchase) updateData.minPurchase = parseFloat(updateData.minPurchase);
+    if (updateData.maxDiscount) updateData.maxDiscount = parseFloat(updateData.maxDiscount);
+    if (updateData.usageLimit) updateData.usageLimit = parseInt(updateData.usageLimit);
+
+    // Handle code uppercase
+    if (updateData.code) {
+      updateData.code = updateData.code.toUpperCase();
+      // Check if new code conflicts with existing coupon
+      const existingCoupon = await Coupon.findOne({
+        code: updateData.code,
+        _id: { $ne: req.params.id }
+      });
+      if (existingCoupon) {
+        return res.status(400).json({ message: 'Coupon code already exists' });
+      }
+    }
+
+    // Handle date
+    if (updateData.expiryDate) {
+      updateData.expiryDate = new Date(updateData.expiryDate);
+    }
+
+    const coupon = await Coupon.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+
+    if (!coupon) {
+      return res.status(404).json({ message: 'Coupon not found' });
+    }
+
+    res.json({ message: 'Coupon updated successfully', coupon });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating coupon', error: error.message });
+  }
+});
+
+app.delete('/api/admin/coupons/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const coupon = await Coupon.findByIdAndDelete(req.params.id);
+    if (!coupon) {
+      return res.status(404).json({ message: 'Coupon not found' });
+    }
+    res.json({ message: 'Coupon deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting coupon', error: error.message });
+  }
+});
+
 // Public Routes (for frontend)
 app.get('/api/categories', async (req, res) => {
   try {
@@ -714,6 +1037,120 @@ app.get('/api/products/:id', async (req, res) => {
     res.json(product);
   } catch (error) {
     res.status(500).json({ message: 'Error fetching products', error: error.message });
+  }
+});
+
+// Public Basket Routes
+app.get('/api/baskets', async (req, res) => {
+  try {
+    const { size, category } = req.query;
+    const filter = { inStock: true };
+
+    if (size) filter.size = size;
+    if (category) filter.category = category;
+
+    const baskets = await Basket.find(filter).sort({ createdAt: -1 });
+    res.json(baskets);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching baskets', error: error.message });
+  }
+});
+
+app.get('/api/baskets/:id', async (req, res) => {
+  try {
+    const basket = await Basket.findById(req.params.id);
+    if (!basket) {
+      return res.status(404).json({ message: 'Basket not found' });
+    }
+    res.json(basket);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching basket', error: error.message });
+  }
+});
+
+// Coupon Validation Route
+app.post('/api/coupons/validate', async (req, res) => {
+  try {
+    const { code, cartTotal } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ message: 'Coupon code is required' });
+    }
+
+    const coupon = await Coupon.findOne({ code: code.toUpperCase() });
+
+    if (!coupon) {
+      return res.status(404).json({ message: 'Invalid coupon code' });
+    }
+
+    if (!coupon.isActive) {
+      return res.status(400).json({ message: 'This coupon is no longer active' });
+    }
+
+    // Check expiry date
+    if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date()) {
+      return res.status(400).json({ message: 'This coupon has expired' });
+    }
+
+    // Check usage limit
+    if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+      return res.status(400).json({ message: 'This coupon has reached its usage limit' });
+    }
+
+    // Check minimum purchase
+    if (cartTotal && coupon.minPurchase > 0 && cartTotal < coupon.minPurchase) {
+      return res.status(400).json({
+        message: `Minimum purchase of ₹${coupon.minPurchase} required for this coupon`
+      });
+    }
+
+    // Calculate discount
+    let discount = 0;
+    if (coupon.discountType === 'percentage') {
+      discount = (cartTotal * coupon.discountValue) / 100;
+      // Apply max discount if set
+      if (coupon.maxDiscount && discount > coupon.maxDiscount) {
+        discount = coupon.maxDiscount;
+      }
+    } else {
+      discount = coupon.discountValue;
+    }
+
+    res.json({
+      valid: true,
+      coupon: {
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        maxDiscount: coupon.maxDiscount,
+        minPurchase: coupon.minPurchase
+      },
+      discount: Math.min(discount, cartTotal || discount),
+      message: 'Coupon applied successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error validating coupon', error: error.message });
+  }
+});
+
+// Apply coupon (increment usage count)
+app.post('/api/coupons/apply', authenticateToken, async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    const coupon = await Coupon.findOneAndUpdate(
+      { code: code.toUpperCase(), isActive: true },
+      { $inc: { usedCount: 1 } },
+      { new: true }
+    );
+
+    if (!coupon) {
+      return res.status(404).json({ message: 'Coupon not found' });
+    }
+
+    res.json({ message: 'Coupon applied successfully', coupon });
+  } catch (error) {
+    res.status(500).json({ message: 'Error applying coupon', error: error.message });
   }
 });
 
